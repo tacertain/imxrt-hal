@@ -166,6 +166,9 @@ usb-device = { version = "0.3", features = ["test-class-high-speed"] }
 usbd-serial = "0.2"
 usbd-hid = "0.8"
 wm8960 = "0.1.2"
+# USB host examples (from imxrt-usbh)
+imxrt-usbh = { path = "../imxrt-usbh" }
+cotton-usb-host = { version = "0.2.1", default-features = false }
 
 [target.'cfg(all(target_arch = "arm", target_os = "none"))'.dev-dependencies]
 board = { path = "board" }
@@ -224,6 +227,23 @@ required-features = ["board/imxrt-log","board/sai","board/teensy4"]
 [[example]]
 name = "rtic_sai_sgtl5000"
 required-features = ["board/imxrt-log","board/sai","board/teensy4"]
+
+# USB host examples (Teensy 4.1 only — requires USB2 host port hardware)
+[[example]]
+name = "rtic_usb_host_enumerate"
+required-features = ["board/teensy4", "board/imxrt-log"]
+
+[[example]]
+name = "rtic_usb_host_hid_keyboard"
+required-features = ["board/teensy4", "board/imxrt-log"]
+
+[[example]]
+name = "rtic_usb_host_hub"
+required-features = ["board/teensy4", "board/imxrt-log", "imxrt-usbh/hub-support"]
+
+[[example]]
+name = "rtic_usb_host_mass_storage"
+required-features = ["board/teensy4", "board/imxrt-log"]
 
 [patch.crates-io.imxrt-ral]
 git = "https://github.com/imxrt-rs/imxrt-ral"
