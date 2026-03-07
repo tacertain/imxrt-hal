@@ -389,6 +389,15 @@ where
     }]
 }
 
+/// Returns the ENET clock gate locator.
+///
+/// ENET is gated at CCGR1, CG5 on the 10xx family.
+#[cfg(not(feature = "imxrt1010"))]
+#[inline(always)]
+pub const fn enet() -> Locator {
+    locator(CCGR1, CG5)
+}
+
 /// Returns the SAI clock gate locators.
 #[inline(always)]
 pub const fn sai<const N: u8>() -> Locator
