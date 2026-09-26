@@ -68,7 +68,6 @@ mod mappings {
 
     pub(super) const ADC_DMA_RX_MAPPING: [u32; 2] = [24, 88];
 
-    // SAI DMA MUX source numbers: SAI1=19/20, SAI2=21/22, SAI3=83/84
     pub(super) const SAI_DMA_RX_MAPPING: [u32; 3] = [19, 21, 83];
     pub(super) const SAI_DMA_TX_MAPPING: [u32; 3] = [20, 22, 84];
 }
@@ -92,9 +91,9 @@ use crate::lpuart;
 
 // Safety: a LPUART can support writes from a DMA engine into its data register.
 // The peripheral is static, so it's always a valid target for memory writes.
-unsafe impl<P, const N: u8> peripheral::Destination<u8> for lpuart::Lpuart<P, N> {
+unsafe impl peripheral::Destination<u8> for lpuart::Lpuart {
     fn destination_signal(&self) -> u32 {
-        LPUART_DMA_TX_MAPPING[N as usize - 1]
+        LPUART_DMA_TX_MAPPING[self.instance() as usize - 1]
     }
     fn destination_address(&self) -> *const u8 {
         self.data().cast()
@@ -109,9 +108,9 @@ unsafe impl<P, const N: u8> peripheral::Destination<u8> for lpuart::Lpuart<P, N>
 
 // Safety: a LPUART can support reads performed by a DMA engine from its data
 // register. The peripheral is static and always valid for reading.
-unsafe impl<P, const N: u8> peripheral::Source<u8> for lpuart::Lpuart<P, N> {
+unsafe impl peripheral::Source<u8> for lpuart::Lpuart {
     fn source_signal(&self) -> u32 {
-        LPUART_DMA_RX_MAPPING[N as usize - 1]
+        LPUART_DMA_RX_MAPPING[self.instance() as usize - 1]
     }
     fn source_address(&self) -> *const u8 {
         self.data().cast()
@@ -124,7 +123,14 @@ unsafe impl<P, const N: u8> peripheral::Source<u8> for lpuart::Lpuart<P, N> {
     }
 }
 
-impl<P, const N: u8> lpuart::Lpuart<P, N> {
+impl lpuart::Lpuart {
+    /// Returns the instance number for this LPUART peripheral.
+    ///
+    /// This is used by chip-specific code for DMA signal mapping.
+    fn instance(&self) -> u8 {
+        ral::lpuart::number(&*self.lpuart).unwrap()
+    }
+
     /// Use a DMA channel to write data to the UART peripheral
     ///
     /// Completes when all data in `buffer` has been written to the UART
@@ -154,9 +160,9 @@ use crate::lpspi;
 
 // Safety: a LPSPI can provide data for a DMA transfer. Its receive data register
 // points to static memory.
-unsafe impl<P, const N: u8> peripheral::Source<u32> for lpspi::Lpspi<P, N> {
+unsafe impl peripheral::Source<u32> for lpspi::Lpspi {
     fn source_signal(&self) -> u32 {
-        LPSPI_DMA_RX_MAPPING[N as usize - 1]
+        LPSPI_DMA_RX_MAPPING[self.instance() as usize - 1]
     }
     fn source_address(&self) -> *const u32 {
         self.rdr().cast()
@@ -171,9 +177,9 @@ unsafe impl<P, const N: u8> peripheral::Source<u32> for lpspi::Lpspi<P, N> {
 
 // Safety: a LPSPI can receive data for a DMA transfer. Its transmit data register
 // points to static memory.
-unsafe impl<P, const N: u8> peripheral::Destination<u32> for lpspi::Lpspi<P, N> {
+unsafe impl peripheral::Destination<u32> for lpspi::Lpspi {
     fn destination_signal(&self) -> u32 {
-        LPSPI_DMA_TX_MAPPING[N as usize - 1]
+        LPSPI_DMA_TX_MAPPING[self.instance() as usize - 1]
     }
     fn destination_address(&self) -> *const u32 {
         self.tdr().cast()
@@ -188,9 +194,15 @@ unsafe impl<P, const N: u8> peripheral::Destination<u32> for lpspi::Lpspi<P, N> 
 
 // Safety: a LPSPI can perform bi-directional I/O from a single buffer. Reads from
 // the buffer are always performed before writes.
-unsafe impl<P, const N: u8> peripheral::Bidirectional<u32> for lpspi::Lpspi<P, N> {}
+unsafe impl peripheral::Bidirectional<u32> for lpspi::Lpspi {}
 
-impl<P, const N: u8> lpspi::Lpspi<P, N> {
+impl lpspi::Lpspi {
+    /// Returns the instance number for this LPSPI peripheral.
+    ///
+    /// This is used by chip-specific code for DMA signal mapping.
+    fn instance(&self) -> u8 {
+        ral::lpspi::number(&*self.lpspi).unwrap()
+    }
     /// Use a DMA channel to write data to the LPSPI peripheral.
     ///
     /// The future completes when all data in `buffer` has been written to the
@@ -204,10 +216,10 @@ impl<P, const N: u8> lpspi::Lpspi<P, N> {
         buffer: &'a [u32],
     ) -> Result<peripheral::Write<'a, Self, u32>, lpspi::LpspiError> {
         let mut transaction = self.bus_transaction(buffer)?;
-        transaction.receive_data_mask = true;
+        transaction.set_receive_data_mask(true);
 
         self.wait_for_transmit_fifo_space()?;
-        self.enqueue_transaction(&transaction);
+        self.enqueue_transaction(transaction);
         Ok(peripheral::write(channel, buffer, self))
     }
 
@@ -223,10 +235,10 @@ impl<P, const N: u8> lpspi::Lpspi<P, N> {
         buffer: &'a mut [u32],
     ) -> Result<peripheral::Read<'a, Self, u32>, lpspi::LpspiError> {
         let mut transaction = self.bus_transaction(buffer)?;
-        transaction.transmit_data_mask = true;
+        transaction.set_transmit_data_mask(true);
 
         self.wait_for_transmit_fifo_space()?;
-        self.enqueue_transaction(&transaction);
+        self.enqueue_transaction(transaction);
         Ok(peripheral::read(channel, self, buffer))
     }
 
@@ -246,7 +258,7 @@ impl<P, const N: u8> lpspi::Lpspi<P, N> {
         let transaction = self.bus_transaction(buffer)?;
 
         self.wait_for_transmit_fifo_space()?;
-        self.enqueue_transaction(&transaction);
+        self.enqueue_transaction(transaction);
         Ok(peripheral::full_duplex(rx, tx, self, buffer))
     }
 }
@@ -258,12 +270,13 @@ use crate::adc;
 #[cfg(any(chip = "imxrt1010", chip = "imxrt1020", chip = "imxrt1060"))]
 // Safety: an ADC source adapter points to a static register that's always valid
 // for reads.
-unsafe impl<P, const N: u8> peripheral::Source<u16> for adc::DmaSource<P, N> {
+unsafe impl peripheral::Source<u16> for adc::DmaSource {
     fn source_signal(&self) -> u32 {
-        ADC_DMA_RX_MAPPING[if N == ral::SOLE_INSTANCE {
-            N as usize
+        let n = self.instance();
+        ADC_DMA_RX_MAPPING[if n == ral::SOLE_INSTANCE {
+            n as usize
         } else {
-            N as usize - 1
+            n as usize - 1
         }]
     }
     fn source_address(&self) -> *const u16 {
@@ -294,15 +307,10 @@ use crate::sai;
 ))]
 // Safety: a SAI transmitter can receive data for a DMA transfer. Its transmit
 // data register (TDR) points to static memory that's always valid for writes.
-unsafe impl<
-        const N: u8,
-        const WORD_SIZE: u8,
-        const FRAME_SIZE: usize,
-        PACKING: sai::Packing<WORD_SIZE>,
-    > peripheral::Destination<u32> for sai::Tx<N, WORD_SIZE, FRAME_SIZE, PACKING>
-{
+unsafe impl peripheral::Destination<u32> for sai::Tx {
     fn destination_signal(&self) -> u32 {
-        SAI_DMA_TX_MAPPING[N as usize - 1]
+        let instance = ral::sai::number(&*self.sai).unwrap();
+        SAI_DMA_TX_MAPPING[instance as usize - 1]
     }
     fn destination_address(&self) -> *const u32 {
         self.tdr(self.channel())
@@ -323,15 +331,10 @@ unsafe impl<
 ))]
 // Safety: a SAI receiver can provide data for a DMA transfer. Its receive
 // data register (RDR) points to static memory that's always valid for reads.
-unsafe impl<
-        const N: u8,
-        const WORD_SIZE: u8,
-        const FRAME_SIZE: usize,
-        PACKING: sai::Packing<WORD_SIZE>,
-    > peripheral::Source<u32> for sai::Rx<N, WORD_SIZE, FRAME_SIZE, PACKING>
-{
+unsafe impl peripheral::Source<u32> for sai::Rx {
     fn source_signal(&self) -> u32 {
-        SAI_DMA_RX_MAPPING[N as usize - 1]
+        let instance = ral::sai::number(&*self.sai).unwrap();
+        SAI_DMA_RX_MAPPING[instance as usize - 1]
     }
     fn source_address(&self) -> *const u32 {
         self.rdr(self.channel())

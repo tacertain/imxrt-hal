@@ -30,7 +30,7 @@
 //!
 //! let registers = unsafe { ral::lpuart::LPUART2::instance() };
 //! let pins = Pins { tx: gpio_ad_b1_02, rx: gpio_ad_b1_03 };
-//! let mut lpuart2 = Lpuart::new(registers, pins);
+//! let mut lpuart2 = Lpuart::with_pins(registers, pins);
 //!
 //! const BAUD: Baud = Baud::compute(UART_CLKC_HZ, 115200);
 //! lpuart2.disable(|lpuart2| {
@@ -51,17 +51,14 @@
 //! let mut buffer = [0u8; 64];
 //! lpuart2.dma_read(&mut dma_channel, &mut buffer)
 //!     .await.ok()?;
-//!
-//! // Release the peripheral instance...
-//! let (lpuart2, pins) = lpuart2.release();
-//!
-//! // Reconstruct without the pins...
-//! let mut lpuart2 = Lpuart::without_pins(lpuart2);
 //! # Some(()) }
 //! ```
 
 use crate::iomuxc;
-use crate::ral::{self, lpuart::Instance};
+use crate::ral;
+
+/// Any LPUART instance.
+type AnyInstance = crate::AnyInstance<ral::lpuart::RegisterBlock>;
 
 /// LPUART pins.
 pub struct Pins<TX, RX>
@@ -84,9 +81,8 @@ where
 /// DMA transfers as futures. The type exposes a lower-level API for
 /// coordinating DMA transfers. However, you may find it easier to use
 /// the [`dma`](crate::dma) interface.
-pub struct Lpuart<P, const N: u8> {
-    pins: P,
-    pub(crate) lpuart: Instance<N>,
+pub struct Lpuart {
+    pub(crate) lpuart: AnyInstance,
 }
 
 /// Serial direction.
@@ -99,46 +95,46 @@ pub enum Direction {
     Rx,
 }
 
-impl<TX, RX, const N: u8> Lpuart<Pins<TX, RX>, N>
-where
-    TX: iomuxc::lpuart::Pin<Module = iomuxc::consts::Const<N>, Direction = iomuxc::lpuart::Tx>,
-    RX: iomuxc::lpuart::Pin<Module = iomuxc::consts::Const<N>, Direction = iomuxc::lpuart::Rx>,
-{
+impl Lpuart {
     /// Create a new LPUART peripheral from its peripheral registers
     /// and TX / RX pins.
     ///
-    /// When `new` returns, the peripheral is reset, the pins are
+    /// When this call returns, the peripheral is reset, the pins are
     /// configured for their LPUART functions, and the TX and RX
     /// halves are enabled.
-    pub fn new(lpuart: Instance<N>, mut pins: Pins<TX, RX>) -> Self {
+    ///
+    /// The pins are consumed to ensure they're properly configured, but they
+    /// are not stored in the driver.
+    pub fn with_pins<TX, RX, const N: u8>(
+        lpuart: ral::lpuart::Instance<N>,
+        mut pins: Pins<TX, RX>,
+    ) -> Self
+    where
+        TX: iomuxc::lpuart::Pin<Module = iomuxc::consts::Const<N>, Direction = iomuxc::lpuart::Tx>,
+        RX: iomuxc::lpuart::Pin<Module = iomuxc::consts::Const<N>, Direction = iomuxc::lpuart::Rx>,
+    {
         iomuxc::lpuart::prepare(&mut pins.tx);
         iomuxc::lpuart::prepare(&mut pins.rx);
-        Self::init(lpuart, pins)
+        Self::init(lpuart)
     }
-}
 
-impl<const N: u8> Lpuart<(), N> {
     /// Create a new LPUART peripheral from its peripheral registers
     /// without any pins.
     ///
-    /// This is similar to [`new()`](Self::new), but it does not configure
+    /// This is similar to [`with_pins()`](Self::with_pins), but it does not configure
     /// pins to function as inputs and outputs. You're responsible
     /// for configuring TX and RX pins and for making sure the pin state
     /// doesn't change.
-    pub fn without_pins(lpuart: Instance<N>) -> Self {
-        Self::init(lpuart, ())
+    pub fn without_pins<const N: u8>(lpuart: ral::lpuart::Instance<N>) -> Self {
+        Self::init(lpuart)
     }
-}
 
-impl<P, const N: u8> Lpuart<P, N> {
-    /// The peripheral instance.
-    pub const N: u8 = N;
-
-    fn init(lpuart: Instance<N>, pins: P) -> Self {
+    fn init<const N: u8>(lpuart: ral::lpuart::Instance<N>) -> Self {
+        let lpuart: AnyInstance = crate::into_any(lpuart);
         ral::write_reg!(ral::lpuart, lpuart, GLOBAL, RST: 1);
         ral::write_reg!(ral::lpuart, lpuart, GLOBAL, RST: 0);
         ral::modify_reg!(ral::lpuart, lpuart, CTRL, TE: TE_1, RE: RE_1);
-        Self { pins, lpuart }
+        Self { lpuart }
     }
 
     /// Indicates if the transmit / receive functions are
@@ -168,32 +164,13 @@ impl<P, const N: u8> Lpuart<P, N> {
         ral::write_reg!(ral::lpuart, self.lpuart, GLOBAL, RST: 0);
     }
 
-    /// Release all components of the LPUART driver.
-    ///
-    /// This does not change any component state; it releases the components as-is.
-    /// If you need to obtain the registers in a known, good state, consider calling
-    /// methods like [`reset()`](Self::reset) before releasing the registers.
-    pub fn release(self) -> (Instance<N>, P) {
-        (self.lpuart, self.pins)
-    }
-
-    /// Borrow the LPUART pins.
-    pub fn pins(&self) -> &P {
-        &self.pins
-    }
-
-    /// Exclusively borrow the LPUART pins.
-    pub fn pins_mut(&mut self) -> &mut P {
-        &mut self.pins
-    }
-
     /// Temporarily disable the LPUART peripheral.
     ///
     /// The handle to a [`Disabled`](crate::lpuart::Disabled) driver lets you modify
     /// LPUART settings that require a fully disabled peripheral. This will flush
     /// TX and RX buffers.
-    pub fn disable<R>(&mut self, func: impl FnOnce(&mut Disabled<N>) -> R) -> R {
-        let mut disabled = Disabled::new(&self.lpuart);
+    pub fn disable<R>(&mut self, func: impl FnOnce(&mut Disabled) -> R) -> R {
+        let mut disabled = Disabled::new(&mut self.lpuart);
         func(&mut disabled)
     }
 
@@ -381,7 +358,7 @@ impl<P, const N: u8> Lpuart<P, N> {
     }
 }
 
-fn flush_fifo<const N: u8>(lpuart: &Instance<N>, direction: Direction) {
+fn flush_fifo(lpuart: &AnyInstance, direction: Direction) {
     match direction {
         Direction::Rx => ral::modify_reg!(ral::lpuart, lpuart, FIFO, RXFLUSH: RXFLUSH_1),
         Direction::Tx => ral::modify_reg!(ral::lpuart, lpuart, FIFO, TXFLUSH: TXFLUSH_1),
@@ -392,20 +369,20 @@ fn flush_fifo<const N: u8>(lpuart: &Instance<N>, direction: Direction) {
 ///
 /// The disabled peripheral lets you changed
 /// settings that require a disabled peripheral.
-pub struct Disabled<'a, const N: u8> {
-    lpuart: &'a Instance<N>,
+pub struct Disabled<'a> {
+    lpuart: &'a mut AnyInstance,
     te: bool,
     re: bool,
 }
 
-impl<const N: u8> Drop for Disabled<'_, N> {
+impl Drop for Disabled<'_> {
     fn drop(&mut self) {
         ral::modify_reg!(ral::lpuart, self.lpuart, CTRL, TE: self.te as u32, RE: self.re as u32);
     }
 }
 
-impl<'a, const N: u8> Disabled<'a, N> {
-    fn new(lpuart: &'a Instance<N>) -> Self {
+impl<'a> Disabled<'a> {
+    fn new(lpuart: &'a mut AnyInstance) -> Self {
         let (te, re) = ral::read_reg!(ral::lpuart, lpuart, CTRL, TE, RE);
         ral::modify_reg!(ral::lpuart, lpuart, CTRL, TE: TE_0, RE: RE_0);
         for direction in [Direction::Rx, Direction::Tx] {
@@ -576,18 +553,10 @@ impl Baud {
     /// is the intended baud rate.
     pub const fn compute(source_clock_hz: u32, baud: u32) -> Baud {
         const fn max(left: u32, right: u32) -> u32 {
-            if left > right {
-                left
-            } else {
-                right
-            }
+            if left > right { left } else { right }
         }
         const fn min(left: u32, right: u32) -> u32 {
-            if left < right {
-                left
-            } else {
-                right
-            }
+            if left < right { left } else { right }
         }
 
         let mut err = u32::MAX;
@@ -644,6 +613,7 @@ impl Parity {
 
 bitflags::bitflags! {
     /// Errors that may occur when reading data.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
     pub struct ReadFlags : u32 {
         /// Data was received with noise.
         const NOISY = 1 << 15;
@@ -667,6 +637,7 @@ bitflags::bitflags! {
     /// Interrupt settings.
     ///
     /// A set bit indicates that the interrupt is enabled.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
     pub struct Interrupts : u32 {
         /// Overrun interrupt enable.
         const OVERRUN = 1 << 27;
@@ -754,6 +725,7 @@ impl From<ReadData> for u8 {
 
 bitflags::bitflags! {
     /// Status flags.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
     pub struct Status : u32 {
         /// Receiver active flag.
         ///
@@ -862,11 +834,11 @@ impl Status {
     }
     /// Returns the FIFO bits that may be written to the FIFO register.
     const fn fifo_bits(self) -> u32 {
-        (self.bits & Self::fifo_mask().bits()) << Self::FIFO_SHIFT
+        (self.bits() & Self::fifo_mask().bits()) << Self::FIFO_SHIFT
     }
     /// Returns the STAT bits that may be writeen to the STAT register.
     const fn stat_bits(self) -> u32 {
-        self.bits & Self::stat_mask().bits()
+        self.bits() & Self::stat_mask().bits()
     }
     /// Compose status bitflags from raw STAT and FIFO register values.
     ///
@@ -910,7 +882,7 @@ impl Watermark {
     }
 }
 
-impl<P, const N: u8> eh02::serial::Write<u8> for Lpuart<P, N> {
+impl eh02::serial::Write<u8> for Lpuart {
     type Error = core::convert::Infallible;
 
     fn write(&mut self, word: u8) -> nb::Result<(), Self::Error> {
@@ -928,7 +900,7 @@ impl<P, const N: u8> eh02::serial::Write<u8> for Lpuart<P, N> {
     }
 }
 
-impl<P, const N: u8> eh02::serial::Read<u8> for Lpuart<P, N> {
+impl eh02::serial::Read<u8> for Lpuart {
     type Error = ReadFlags;
 
     fn read(&mut self) -> nb::Result<u8, Self::Error> {
@@ -947,7 +919,7 @@ impl<P, const N: u8> eh02::serial::Read<u8> for Lpuart<P, N> {
     }
 }
 
-impl<P, const N: u8> eh02::blocking::serial::Write<u8> for Lpuart<P, N> {
+impl eh02::blocking::serial::Write<u8> for Lpuart {
     type Error = core::convert::Infallible;
 
     fn bwrite_all(&mut self, buffer: &[u8]) -> Result<(), Self::Error> {
@@ -964,29 +936,37 @@ impl<P, const N: u8> eh02::blocking::serial::Write<u8> for Lpuart<P, N> {
     }
 }
 
-impl eio06::Error for ReadFlags {
-    fn kind(&self) -> eio06::ErrorKind {
-        eio06::ErrorKind::Other
+impl core::fmt::Display for ReadFlags {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "Read data error: {self:?}")
     }
 }
 
-impl<P, const N: u8> eio06::ErrorType for Lpuart<P, N> {
+impl core::error::Error for ReadFlags {}
+
+impl embedded_io::Error for ReadFlags {
+    fn kind(&self) -> embedded_io::ErrorKind {
+        embedded_io::ErrorKind::Other
+    }
+}
+
+impl embedded_io::ErrorType for Lpuart {
     type Error = ReadFlags;
 }
 
-impl<P, const N: u8> eio06::WriteReady for Lpuart<P, N> {
+impl embedded_io::WriteReady for Lpuart {
     fn write_ready(&mut self) -> Result<bool, Self::Error> {
         Ok(self.status().contains(Status::TRANSMIT_EMPTY))
     }
 }
 
-impl<P, const N: u8> eio06::ReadReady for Lpuart<P, N> {
+impl embedded_io::ReadReady for Lpuart {
     fn read_ready(&mut self) -> Result<bool, Self::Error> {
         Ok(self.status().contains(Status::RECEIVE_FULL))
     }
 }
 
-impl<P, const N: u8> eio06::Write for Lpuart<P, N> {
+impl embedded_io::Write for Lpuart {
     fn write(&mut self, buf: &[u8]) -> Result<usize, Self::Error> {
         let mut num_written = 0;
         for word in buf {
@@ -1015,7 +995,7 @@ impl<P, const N: u8> eio06::Write for Lpuart<P, N> {
     }
 }
 
-impl<P, const N: u8> eio06::Read for Lpuart<P, N> {
+impl embedded_io::Read for Lpuart {
     fn read(&mut self, buf: &mut [u8]) -> Result<usize, Self::Error> {
         let mut num_read = 0;
         for word in buf {
@@ -1132,8 +1112,10 @@ mod tests {
         assert_eq!(Status::stat_mask().stat_bits(), 0x01FF_0000);
         assert_eq!(Status::W1C.bits(), 0x001F_3000);
 
-        assert!(Status::from_registers(0, (1 << 17) | (1 << 16))
-            .contains(Status::TRANSMIT_OVERFLOW | Status::RECEIVE_UNDERFLOW));
+        assert!(
+            Status::from_registers(0, (1 << 17) | (1 << 16))
+                .contains(Status::TRANSMIT_OVERFLOW | Status::RECEIVE_UNDERFLOW)
+        );
         assert!(Status::from_registers(u32::MAX, 0).contains(Status::stat_mask()));
 
         assert!(Status::all().contains(Status::TRANSMIT_EMPTY));

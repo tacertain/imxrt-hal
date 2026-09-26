@@ -22,15 +22,7 @@ version = "0.7"
 version = "1.0"
 
 [dependencies.bitflags]
-version = "1.3"
-
-[dependencies.fugit]
-version = "0.3"
-
-# For EH02 CountDown.
-[dependencies.void]
-version = "1"
-default-features = false
+version = "2.0"
 
 [dependencies.nb]
 version = "1"
@@ -48,14 +40,9 @@ version = "0.2.6"
 package = "embedded-hal"
 version = "1.0.0"
 
-[dependencies.eio06]
+[dependencies.embedded-io]
 package = "embedded-io"
-version = "0.6.1"
-
-[dependencies.rand_core]
-version = "0.5"
-default-features = false
-optional = true
+version = "0.7.1"
 
 # This is an indirect dependency through imxrt-ral;
 # imxrt-ral depends on `ral-registers 0.1.0`,
@@ -80,10 +67,6 @@ workspace = true
 [dependencies.imxrt-ral]
 workspace = true
 
-[dependencies.imxrt-usbd]
-workspace = true
-optional = true
-
 [package.metadata.docs.rs]
 default-target = "thumbv7em-none-eabihf"
 features = ["imxrt-ral/imxrt1062", "imxrt1060"]
@@ -93,7 +76,6 @@ features = ["imxrt-ral/imxrt1062", "imxrt1060"]
 ###############
 
 [features]
-default = ["imxrt-usbd"]
 imxrt1010 = ["imxrt-iomuxc/imxrt1010"]
 imxrt1020 = ["imxrt-iomuxc/imxrt1020"]
 imxrt1060 = ["imxrt-iomuxc/imxrt1060"]
@@ -101,19 +83,11 @@ imxrt1064 = ["imxrt-iomuxc/imxrt1060"]
 imxrt1170 = ["imxrt-iomuxc/imxrt1170"]
 imxrt1180 = ["imxrt-iomuxc/imxrt1180"]
 
-################
-# Extra features
-################
-
-# Enable implementations for EH02 "unproven" traits.
-# Requires the EH02 "unproven" feature.
-eh02-unproven = []
-
 [workspace]
 members = ["board", "logging"]
 
 [workspace.dependencies]
-imxrt-dma = "0.1"
+imxrt-dma = "0.2.0"
 imxrt-iomuxc = "0.3.0"
 imxrt-hal = { version = "0.6", path = "." }
 imxrt-log = { path = "logging", default-features = false, features = [
@@ -122,16 +96,16 @@ imxrt-log = { path = "logging", default-features = false, features = [
     "usbd",
 ] }
 imxrt-ral = "0.6"
-imxrt-rt = "0.1.5"
-imxrt-usbd = "0.3"
-defmt = "0.3"
+imxrt-rt = "0.1.8"
+imxrt-usbd = "0.4"
+defmt = "1.0"
 
 [workspace.package]
 repository = "https://github.com/imxrt-rs/imxrt-hal"
 keywords = ["imxrt", "nxp", "embedded", "no_std", "embedded-hal"]
 categories = ["embedded", "no-std"]
 license = "MIT OR Apache-2.0"
-edition = "2021"
+edition = "2024"
 
 [profile.dev]
 opt-level = 1
@@ -158,7 +132,11 @@ codegen-units = 256
 
 [dev-dependencies]
 imxrt-rt = { workspace = true }
+imxrt-usbd = { workspace = true }
 menu = "0.3.2"
+# Check out https://github.com/rust-embedded/cortex-m/issues/680
+# before removing this pinned dependency.
+cortex-m = "=0.7.7"
 rtic = { version = "2.0", features = ["thumbv7-backend"] }
 log = "0.4"
 pin-utils = "0.1"
@@ -224,9 +202,3 @@ required-features = ["board/imxrt-log","board/sai","board/teensy4"]
 [[example]]
 name = "rtic_sai_sgtl5000"
 required-features = ["board/imxrt-log","board/sai","board/teensy4"]
-
-[patch.crates-io.imxrt-ral]
-git = "https://github.com/imxrt-rs/imxrt-ral"
-
-[patch.crates-io.imxrt-iomuxc]
-git = "https://github.com/imxrt-rs/imxrt-iomuxc"

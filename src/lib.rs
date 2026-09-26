@@ -51,8 +51,6 @@
 //! | `"imxrt1064"`     | Enable features for the 1064 chips.                              |
 //! | `"imxrt1170"`     | Enable features for the 1170 chips.                              |
 //! | `"imxrt1180"`     | Enable features for the 1180 chips.                              |
-//! | `"eh02-unproven"` | Enable implementations for embedded-hal 0.2 `"unproven"` traits. |
-//! | `"rand_core"`     | Allows the TRNG to be used with the `rand` package.              |
 //!
 //! The APIs exposed by the various `"imxrt[...]"` features are chip specific.
 //! The HAL does not support building with more than one of these features at a
@@ -77,9 +75,6 @@
 //! version = # ...
 //! features = ["imxrt1062"] # Informs the HAL chip feature
 //! ```
-//!
-//! The `"eh02-unproven"` feature will not build without the corresponding
-//! `"unproven"` feature enabled in embedded-hal 0.2.
 
 #![no_std]
 #![warn(
@@ -205,78 +200,6 @@ pub mod dma {
     pub use crate::common::dma::*;
 }
 
-/// USB device.
-///
-/// This module re-exports types from the `imxrt-usbd` package. The driver is compatible
-///  with the [`usb-device`](https://docs.rs/usb-device/latest/usb_device/) ecosystem.
-///
-/// It also provides [`Instances`](crate::usbd::Instances), an implementation of `imxrt_usbd::Peripherals` over
-/// `imxrt-ral` USB instances.
-///
-/// # Example
-///
-/// Construct a [`BusAdapter`](crate::usbd::BusAdapter) with USB peripheral instances. See the
-/// [`BusAdapter`](crate::usbd::BusAdapter) documentation for more information on how to use the bus.
-///
-/// ```no_run
-/// use imxrt_hal as hal;
-/// use imxrt_ral as ral;
-///
-/// use hal::usbd;
-///
-/// # || -> Option<()> {
-/// let mut usb_analog = unsafe { ral::usb_analog::USB_ANALOG::instance() };
-/// let usb_instances = usbd::Instances {
-///     usb: unsafe { ral::usb::USB1::instance() },
-///     usbnc: unsafe { ral::usbnc::USBNC1::instance() },
-///     usbphy: unsafe { ral::usbphy::USBPHY1::instance() },
-/// };
-///
-/// // Prepare the USB clocks.
-/// let mut ccm_analog = unsafe { ral::ccm_analog::CCM_ANALOG::instance() };
-/// hal::ccm::analog::pll3::restart(&mut ccm_analog);
-///
-/// static ENDPOINT_MEMORY: usbd::EndpointMemory<2048> = usbd::EndpointMemory::new();
-/// static ENDPOINT_STATE: usbd::EndpointState = usbd::EndpointState::max_endpoints();
-///
-/// let usbd = usbd::BusAdapter::new(usb_instances, &ENDPOINT_MEMORY, &ENDPOINT_STATE);
-/// # Some(()) }().unwrap();
-/// ```
-#[cfg(feature = "imxrt-usbd")]
-pub mod usbd {
-    pub use imxrt_usbd::*;
-
-    use crate::ral;
-
-    /// Aggregate of `imxrt-ral` USB peripheral instances.
-    ///
-    /// This takes ownership of USB peripheral instances and implements
-    /// [`Peripherals`]. You can use this type to allocate a USB device
-    /// driver. See the [module-level documentation](crate::usbd) for an
-    /// example.
-    pub struct Instances<const N: u8> {
-        /// USB core registers.
-        pub usb: ral::usb::Instance<N>,
-        /// USB non-core registers.
-        pub usbnc: ral::usbnc::Instance<N>,
-        /// USBPHY registers.
-        pub usbphy: ral::usbphy::Instance<N>,
-    }
-
-    // Safety: pointers to USB peripheral blocks come from
-    // imxrt-ral, which provides correct addresses. We take
-    // ownership of the peripheral instances, preventing others
-    // from aliasing the peripherals.
-    unsafe impl<const N: u8> Peripherals for Instances<N> {
-        fn usb(&self) -> *const () {
-            (&*self.usb as *const ral::usb::RegisterBlock).cast()
-        }
-        fn usbphy(&self) -> *const () {
-            (&*self.usbphy as *const ral::usbphy::RegisterBlock).cast()
-        }
-    }
-}
-
 /// Pad muxing and configurations.
 ///
 /// This module re-exports select items from the `imxrt-iomuxc` crate. When a chip feature is enabled, the module also exports
@@ -315,4 +238,58 @@ fn spin_on<F: core::future::Future>(future: F) -> F::Output {
             return result;
         }
     }
+}
+
+/// The wrapped pin is not compatible with this peripheral instance.
+///
+/// If `P` is `()`, it indicates that the caller's pin was incompatible with the
+/// peripheral, but the method did not take ownership of a pin.
+pub struct PinPortIncompatibleError<P>(P);
+impl<P> PinPortIncompatibleError<P> {
+    /// Acquire the pin from this error.
+    pub fn pin(self) -> P {
+        self.0
+    }
+}
+
+impl<P> core::fmt::Debug for PinPortIncompatibleError<P> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str("PinPortIncompatibleError")
+    }
+}
+
+#[cfg(feature = "defmt")]
+impl<P> defmt::Format for PinPortIncompatibleError<P> {
+    fn format(&self, f: defmt::Formatter) {
+        defmt::write!(f, "PinPortIncompatibleError")
+    }
+}
+
+/// The peripheral instance for when we don't care.
+const HAL_INST: u8 = 0xff;
+
+/// Any peripheral instance acquired by
+/// our drivers, without the instance
+/// number.
+type AnyInstance<T> = imxrt_ral::Instance<T, HAL_INST>;
+
+/// Discard the instance number.
+fn into_any<T, const N: u8>(inst: imxrt_ral::Instance<T, N>) -> AnyInstance<T> {
+    // Safety: the user who made inst claims that it
+    // points to static MMIO. We're the new owner of
+    // that MMIO, and we choose to discard type info.
+    // We'll never reveal this instance back to the
+    // user.
+    unsafe {
+        let block: *const T = &*inst;
+        AnyInstance::new(block)
+    }
+}
+
+/// Returns `true` if these instances point to the same register block.
+#[allow(unused, reason = "Only needed in some chip-specific drivers")]
+fn is_same_instance<T>(left: &AnyInstance<T>, right: &AnyInstance<T>) -> bool {
+    let left: *const T = &**left;
+    let right: *const T = &**right;
+    core::ptr::eq(left, right)
 }

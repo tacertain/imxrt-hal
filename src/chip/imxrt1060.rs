@@ -4,7 +4,7 @@
 //! 1060 chips.
 
 pub use drivers::{
-    adc, ccm_10xx as ccm, dcdc, dma, gpio, iomuxc_10xx as iomuxc, pit, sai, snvs, tempmon, timer,
+    adc, ccm_10xx as ccm, dcdc, dma, gpio, iomuxc_10xx as iomuxc, ocotp, pit, sai, snvs, tempmon,
     trng,
 };
 
@@ -14,16 +14,18 @@ mod drivers {
     pub mod dcdc;
     pub mod dma;
     pub mod gpio;
+    pub mod ocotp;
     pub mod pit;
     pub mod sai;
     pub mod snvs;
     pub mod tempmon;
-    pub mod timer;
     pub mod trng;
 
     #[macro_use]
     pub mod ccm_10xx;
     pub mod iomuxc_10xx;
+
+    pub(crate) mod ocotp_10xx;
 }
 
 #[path = "drivers"]

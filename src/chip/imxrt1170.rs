@@ -1,6 +1,6 @@
 //! i.MX RT 1170 chip family features.
 
-pub use drivers::{ccm_11xx as ccm, dma, gpio, pit, sai, snvs, timer, usbphy};
+pub use drivers::{ccm_11xx as ccm, dma, gpio, ocotp, pit, sai, snvs, usbphy};
 
 pub(crate) mod iomuxc {
     pub use super::config::pads;
@@ -18,22 +18,22 @@ pub(crate) mod iomuxc {
 mod drivers {
     pub mod dma;
     pub mod gpio;
+    pub mod ocotp;
     pub mod pit;
     pub mod sai;
     pub mod snvs;
-    pub mod timer;
     pub mod usbphy;
 
     pub mod ccm_11xx;
+
+    pub(crate) mod ocotp_11xx;
 }
 
-#[path = "drivers"]
 pub(crate) mod config {
     pub(crate) const DMA_CHANNEL_COUNT: usize = 32;
 
     pub use imxrt_iomuxc::imxrt1170 as pads;
 
-    #[path = "ccm_11xx"]
     pub(crate) mod ccm {
         pub(crate) mod clko {
             /// CLKO1 output clock selections.

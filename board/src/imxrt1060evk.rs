@@ -38,13 +38,14 @@ pub use imxrt10xx::clock::*;
 pub(crate) const DEFAULT_LOGGING_BACKEND: crate::logging::Backend = crate::logging::Backend::Lpuart;
 
 /// The board LED.
-pub type Led = hal::gpio::Output<iomuxc::gpio_ad_b0::GPIO_AD_B0_09>;
+pub type Led = hal::gpio::Output;
 
 /// The board's "user button". Could also be used as a wake up source.
-pub type Button = hal::gpio::Input<()>;
+pub type Button = hal::gpio::Input;
 
 /// The UART console. Baud specified in lib.rs.
-pub type Console = hal::lpuart::Lpuart<ConsolePins, 1>;
+pub type Console = hal::lpuart::Lpuart;
+const CONSOLE_INSTANCE: u8 = 1;
 
 /// The debug serial console's pins.
 ///
@@ -72,11 +73,15 @@ pub type Spi = ();
 
 #[cfg(feature = "spi")]
 /// SPI peripheral.
-pub type Spi = hal::lpspi::Lpspi<SpiPins, 1>;
+pub type Spi = hal::lpspi::Lpspi;
+#[cfg(feature = "spi")]
+const SPI_INSTANCE: u8 = 1;
 
 type I2cScl = iomuxc::gpio_ad_b1::GPIO_AD_B1_00; // J24_10
 type I2cSda = iomuxc::gpio_ad_b1::GPIO_AD_B1_01; // J24_9
 pub type I2cPins = hal::lpi2c::Pins<I2cScl, I2cSda>;
+
+const I2C_INSTANCE: u8 = 1;
 
 /// I2C peripheral.
 ///
@@ -87,41 +92,34 @@ pub type I2cPins = hal::lpi2c::Pins<I2cScl, I2cSda>;
 /// - LCD touch interface.
 /// - FXOS8700 (typically DNP).
 /// - CSI camera interface.
-pub type I2c = hal::lpi2c::Lpi2c<I2cPins, 1>;
+pub type I2c = hal::lpi2c::Lpi2c;
 
 /// PWM components.
 pub mod pwm {
     use super::iomuxc;
     use crate::hal::flexpwm;
 
-    pub type Peripheral = flexpwm::Pwm<1>;
-    pub type Submodule = flexpwm::Submodule<{ Peripheral::N }, 3>;
-    pub type Outputs = (
-        flexpwm::Output<iomuxc::gpio_ad_b0::GPIO_AD_B0_10>, // A, J22_6
-        flexpwm::Output<iomuxc::gpio_ad_b0::GPIO_AD_B0_11>, // B, J22_3
-    );
-}
+    pub use flexpwm::Pwm;
 
-/// The board's PWM components.
-pub struct Pwm {
-    /// Core PWM peripheral.
-    pub module: pwm::Peripheral,
-    /// PWM submodule control registers.
-    pub submodule: pwm::Submodule,
-    /// The output pairs (tuple of A, B outputs).
-    pub outputs: pwm::Outputs,
+    pub(super) const N: u8 = 1;
+    pub const SM: flexpwm::SM = flexpwm::SM::SM3;
+
+    pub use flexpwm::Channel::*;
+
+    pub(super) type PinA = iomuxc::gpio_ad_b0::GPIO_AD_B0_10; // J22_6
+    pub(super) type PinB = iomuxc::gpio_ad_b0::GPIO_AD_B0_11; // J22_3
 }
 
 /// Opaque structure for managing GPIO ports.
 ///
 /// Exposes methods to configure your board's GPIOs.
 pub struct GpioPorts {
-    gpio5: hal::gpio::Port<5>,
+    gpio5: hal::gpio::Port,
 }
 
 impl GpioPorts {
     /// Returns the GPIO port for the button.
-    pub fn button_mut(&mut self) -> &mut hal::gpio::Port<5> {
+    pub fn button_mut(&mut self) -> &mut hal::gpio::Port {
         &mut self.gpio5
     }
 }
@@ -134,7 +132,7 @@ pub struct Specifics {
     pub console: Console,
     pub spi: Spi,
     pub i2c: I2c,
-    pub pwm: Pwm,
+    pub pwm: pwm::Pwm,
     pub trng: hal::trng::Trng,
     pub tempmon: hal::tempmon::TempMon,
 }
@@ -155,14 +153,14 @@ impl Specifics {
 
         let gpio1 = unsafe { ral::gpio::GPIO1::instance() };
         let mut gpio1 = hal::gpio::Port::new(gpio1);
-        let led = gpio1.output(iomuxc.gpio_ad_b0.p09);
+        let led = gpio1.output(iomuxc.gpio_ad_b0.p09).unwrap();
 
         let gpio5 = unsafe { ral::gpio::GPIO5::instance() };
         let mut gpio5 = hal::gpio::Port::new(gpio5);
         let button = hal::gpio::Input::without_pin(&mut gpio5, 0);
 
         let lpuart1 = unsafe { ral::lpuart::LPUART1::instance() };
-        let mut console = hal::lpuart::Lpuart::new(
+        let mut console = hal::lpuart::Lpuart::with_pins(
             lpuart1,
             hal::lpuart::Pins {
                 tx: iomuxc.gpio_ad_b0.p12,
@@ -186,7 +184,7 @@ impl Specifics {
                 let pcs0: &mut SpiPcs0 = &mut iomuxc.gpio_sd_b0.p01;
                 pcs0
             });
-            let mut spi = Spi::new(lpspi1, pins);
+            let mut spi = Spi::with_pins(lpspi1, pins);
             spi.disabled(|spi| {
                 spi.set_clock_hz(super::LPSPI_CLK_FREQUENCY, super::SPI_BAUD_RATE_FREQUENCY);
             });
@@ -197,7 +195,7 @@ impl Specifics {
         let spi = ();
 
         let lpi2c1 = unsafe { ral::lpi2c::LPI2C1::instance() };
-        let i2c = I2c::new(
+        let i2c = I2c::with_pins(
             lpi2c1,
             I2cPins {
                 scl: iomuxc.gpio_ad_b1.p00,
@@ -208,16 +206,12 @@ impl Specifics {
 
         let flexpwm1 = unsafe { ral::pwm::PWM1::instance() };
         let pwm = {
-            let (pwm, (_, _, _, sm)) = hal::flexpwm::new(flexpwm1);
-
-            let out_a = hal::flexpwm::Output::new_a(iomuxc.gpio_ad_b0.p10);
-            let out_b = hal::flexpwm::Output::new_b(iomuxc.gpio_ad_b0.p11);
-
-            Pwm {
-                module: pwm,
-                submodule: sm,
-                outputs: (out_a, out_b),
-            }
+            let pwm = pwm::Pwm::new::<{ pwm::N }>(flexpwm1);
+            let mut pin_a: pwm::PinA = iomuxc.gpio_ad_b0.p10;
+            let mut pin_b: pwm::PinB = iomuxc.gpio_ad_b0.p11;
+            crate::iomuxc::flexpwm::prepare(&mut pin_a);
+            crate::iomuxc::flexpwm::prepare(&mut pin_b);
+            pwm
         };
         let trng = hal::trng::Trng::new(
             unsafe { ral::trng::TRNG::instance() },
@@ -248,11 +242,11 @@ use hal::ccm::clock_gate;
 pub(crate) const CLOCK_GATES: &[clock_gate::Locator] = &[
     clock_gate::gpio::<1>(),
     clock_gate::gpio::<5>(),
-    clock_gate::lpuart::<{ Console::N }>(),
+    clock_gate::lpuart::<CONSOLE_INSTANCE>(),
     #[cfg(feature = "spi")]
-    clock_gate::lpspi::<{ Spi::N }>(),
-    clock_gate::lpi2c::<{ I2c::N }>(),
-    clock_gate::flexpwm::<{ pwm::Peripheral::N }>(),
+    clock_gate::lpspi::<SPI_INSTANCE>(),
+    clock_gate::lpi2c::<{ I2C_INSTANCE }>(),
+    clock_gate::flexpwm::<{ pwm::N }>(),
 ];
 
 /// Configure board pins.
@@ -261,8 +255,8 @@ pub(crate) const CLOCK_GATES: &[clock_gate::Locator] = &[
 /// set alternates here.
 fn configure_pins(
     super::Pads {
-        ref mut gpio_ad_b1,
-        ref mut gpio_sd_b0,
+        gpio_ad_b1,
+        gpio_sd_b0,
         ..
     }: &mut super::Pads,
 ) {

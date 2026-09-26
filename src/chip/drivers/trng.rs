@@ -8,29 +8,12 @@
 //! algorithm. Occasionally retrieving entropy from it won't necessarily need to block, as
 //! this driver retrieves 512 bits at a time.
 //!
-//! ## RngCore Support
-//!
-//! When the crate feature `rand_core` is enabled, the TRNG can be wrapped in a struct that
-//! implements [`rand_core`][rand_core]'s `RngCore` trait (via `into_rng()`). The [`rand`][rand]
-//! crate's `Rng` trait automatically implements high-level functions on top of `RngCore`.
-//!
-//! Note that only the `try_fill_bytes` function of `RngCore` allows reporting an error. The others
-//! will panic if the TRNG reports an error. Errors appear to be extremely rare in the default
-//! configuration (none were seen over 3GB of data), but it's possible they will be more common in
-//! certain situations, such as extreme temperatures or an inconsistent power supply. The non-public
-//! Security Reference Manual may have more information.
-//!
-//! If you intend to use the `RngCore` wrapper, you should set a larger retry count. The default
-//! retry count should be sufficient.
-//!
-//! [rand_core]: https://crates.io/crates/rand_core
-//! [rand]: https://crates.io/crates/rand
-//!
 //! # Example
 //!
 //! Enable the TRNG clock gate, wait to generate random data.
 //!
 //! ```no_run
+//! use core::task::Poll;
 //! use imxrt_hal as hal;
 //! use imxrt_ral as ral;
 //!
@@ -44,11 +27,16 @@
 //!     hal::trng::RetryCount::default(),
 //! );
 //!
-//! let random_data = nb::block!(trng.next_u32()).ok()?;
+//! let random_data = loop {
+//!     if let Poll::Ready(result) = trng.next_u32() {
+//!         break result.ok()?;
+//!     }
+//! };
 //! # Some(()) }();
 //! ```
 
 use core::fmt;
+use core::task::{Poll, ready};
 
 use crate::ral::trng;
 use crate::ral::{modify_reg, read_reg, write_reg};
@@ -190,34 +178,34 @@ impl Trng {
 
     /// Return the next randomly-generated `u32`. May need to retrieve another block of random numbers.
     ///
-    /// Returns "would block" if we're not ready to read entropy; try again. See the module-level
+    /// Returns `Poll::Pending` if we're not ready to read entropy; try again. See the module-level
     /// example for how to block.
-    pub fn next_u32(&mut self) -> nb::Result<u32, Error> {
-        self.retrieve_if_needed()?;
-        let data = nb::Result::Ok(self.block[self.index]);
+    pub fn next_u32(&mut self) -> Poll<Result<u32, Error>> {
+        ready!(self.retrieve_if_needed())?;
+        let data = self.block[self.index];
         self.index += 1;
-        data
+        Poll::Ready(Ok(data))
     }
 
     /// Retrieve another block of random numbers if we've used them all up.
-    fn retrieve_if_needed(&mut self) -> nb::Result<(), Error> {
+    fn retrieve_if_needed(&mut self) -> Poll<Result<(), Error>> {
         if self.index >= self.block.len() {
-            self.retrieve()?;
+            ready!(self.retrieve())?;
             self.index = 0;
         }
-        Ok(())
+        Poll::Ready(Ok(()))
     }
 
     /// Retrieve another block of random numbers.
-    fn retrieve(&mut self) -> nb::Result<(), Error> {
+    fn retrieve(&mut self) -> Poll<Result<(), Error>> {
         let mctl = read_reg!(trng, self.reg, MCTL);
         if (mctl & trng::MCTL::ERR::mask) != 0 {
             let flags = self.get_error_flags();
             write_reg!(trng, self.reg, MCTL, mctl); // write reg back to clear error
-            return Err(nb::Error::Other(Error(flags)));
+            return Poll::Ready(Err(Error(flags)));
         }
         if (mctl & trng::MCTL::ENT_VAL::mask) == 0 {
-            return Err(nb::Error::WouldBlock); // not ready to read entropy
+            return Poll::Pending; // not ready to read entropy
         }
         for idx in 0..self.reg.ENT.len() {
             self.block[idx] = read_reg!(trng, self.reg, ENT[idx]);
@@ -230,7 +218,7 @@ impl Trng {
         //     had to do a dummy reading operation for anyone TRNG register
         //     to clear it firstly, then to read the RTENT0 to RTENT15 again
         // This appears unnecessary on the 1062? done anyway in case it's necessary for another chip
-        Ok(())
+        Poll::Ready(Ok(()))
     }
 
     /// Retrieve all known error flags.
@@ -257,87 +245,6 @@ impl Trng {
         }
         self.reg
     }
-
-    /// Wrap the TRNG in a struct that implements `rand_core`'s `RngCore` trait.
-    #[cfg(feature = "rand_core")]
-    pub fn into_rng(self) -> RngCoreWrapper {
-        RngCoreWrapper(self)
-    }
-
-    #[cfg(feature = "rand_core")]
-    fn read(&mut self, buffer: &mut [u8]) -> Result<(), Error> {
-        let mut data = [0; 4];
-        let mut index = 4;
-        for b in buffer.iter_mut() {
-            if index == 4 {
-                data = nb::block!(self.next_u32())?.to_be_bytes();
-                index = 0;
-            }
-            *b = data[index];
-            index += 1;
-        }
-        Ok(())
-    }
-}
-
-/// Wrapper struct around [`TRNG`] that implements `RngCore`.
-#[cfg(feature = "rand_core")]
-pub struct RngCoreWrapper(Trng);
-
-#[cfg(feature = "rand_core")]
-impl RngCoreWrapper {
-    /// Deconstruct this wrapper and return the TRNG struct.
-    pub fn into_inner(self) -> Trng {
-        self.0
-    }
-}
-
-#[cfg(feature = "rand_core")]
-impl rand_core::RngCore for RngCoreWrapper {
-    /// Return the next random `u32`.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the TRNG returns an error.
-    fn next_u32(&mut self) -> u32 {
-        let mut bytes = [0; 4];
-        self.fill_bytes(&mut bytes);
-        u32::from_be_bytes(bytes)
-    }
-
-    /// Return the next random `u64`.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the TRNG returns an error.
-    fn next_u64(&mut self) -> u64 {
-        let mut bytes = [0; 8];
-        self.fill_bytes(&mut bytes);
-        u64::from_be_bytes(bytes)
-    }
-
-    /// Fill `dest` with random data.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the TRNG returns an error.
-    fn fill_bytes(&mut self, dest: &mut [u8]) {
-        self.try_fill_bytes(dest).expect("TRNG returned an error")
-    }
-
-    /// Fill `dest` with random data.
-    ///
-    /// If an error occurs, the error's `code` is the bits of the [`ErrorFlags`] that this driver
-    /// would have reported, ORed with [`rand_core::Error::CUSTOM_START`]. Use
-    /// [`ErrorFlags::from_bits_truncate`] to convert the `code` to the struct.
-    fn try_fill_bytes(&mut self, dest: &mut [u8]) -> Result<(), rand_core::Error> {
-        // defer to Read implementation, converting error to rand_core's Error
-        self.0.read(dest).map_err(|e| {
-            let code = e.0.bits | rand_core::Error::CUSTOM_START;
-            // Safety: Two highest bits always set.
-            unsafe { core::num::NonZeroU32::new_unchecked(code).into() }
-        })
-    }
 }
 
 /// A TRNG error occurred, such as a statistical test failing.
@@ -347,7 +254,7 @@ pub struct Error(pub ErrorFlags);
 
 bitflags::bitflags! {
     /// Specific errors that may occur during entropy generation
-    #[cfg_attr(feature = "defmt", derive(defmt::Format))]
+    #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
     pub struct ErrorFlags : u32 {
         // STATUS register starts here (automatically set from bits)
         /// 1-bit run sampling 0s test failed
@@ -388,30 +295,16 @@ bitflags::bitflags! {
     }
 }
 
-impl fmt::Display for Error {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "An error occurred in the TRNG module")
+#[cfg(feature = "defmt")]
+impl defmt::Format for ErrorFlags {
+    fn format(&self, f: defmt::Formatter) {
+        defmt::write!(f, "ErrorFlags({=u32:#x})", self.bits());
     }
 }
 
-#[cfg(feature = "eh02-unproven")]
-impl eh02::blocking::rng::Read for Trng {
-    type Error = Error;
-    // e-h RNG Read is a *blocking* trait, so no WouldBlock here
-    // Read is part of the unproven API and will be removed in version 1.0
-
-    fn read(&mut self, buffer: &mut [u8]) -> Result<(), Self::Error> {
-        let mut data = [0; 4];
-        let mut index = 4;
-        for b in buffer.iter_mut() {
-            if index == 4 {
-                data = nb::block!(self.next_u32())?.to_be_bytes();
-                index = 0;
-            }
-            *b = data[index];
-            index += 1;
-        }
-        Ok(())
+impl fmt::Display for Error {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "An error occurred in the TRNG module")
     }
 }
 

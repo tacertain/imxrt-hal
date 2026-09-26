@@ -26,7 +26,7 @@
 //! # const LPI2C_CLK_HZ: u32 = 8_000_000;
 //! const LPI2C_400KHz: lpi2c::Timing = lpi2c::Timing::ideal(LPI2C_CLK_HZ, lpi2c::ClockSpeed::KHz400);
 //!
-//! let mut i2c3 = Lpi2c::new(
+//! let mut i2c3 = Lpi2c::with_pins(
 //!     i2c3,
 //!     lpi2c::Pins {
 //!         scl: pads.gpio_ad_b1.p07,
@@ -40,12 +40,6 @@
 //! # const MY_DEVICE_ADDRESS: u8 = 0;
 //!
 //! i2c3.write_read(MY_DEVICE_ADDRESS, &output, &mut input).ok()?;
-//!
-//! // Release the driver components...
-//! let (i2c3, pins) = i2c3.release();
-//!
-//! // Re-construct without pins...
-//! let mut i2c3 = Lpi2c::without_pins(i2c3, &LPI2C_400KHz);
 //! # Some(()) }();
 //! ```
 //!
@@ -54,11 +48,13 @@
 //! This driver supports standard, fast, and fast+ modes. High speed mode is not
 //! yet supported, and supporting the mode was not considered in the initial driver
 //! design.
-use crate::iomuxc::consts;
 
 use crate::iomuxc::lpi2c;
 use crate::ral;
 use eh02::blocking::i2c as blocking;
+
+/// Any LPI2C instance.
+type AnyInstance = crate::AnyInstance<ral::lpi2c::RegisterBlock>;
 
 /// Data direction.
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
@@ -90,60 +86,58 @@ where
 ///
 /// See the [module-level documentation](crate::lpi2c) for an example
 /// of how to construct this driver.
-pub struct Lpi2c<P, const N: u8> {
-    lpi2c: ral::lpi2c::Instance<N>,
-    pins: P,
+pub struct Lpi2c {
+    lpi2c: AnyInstance,
 }
 
-impl<SCL, SDA, const N: u8> Lpi2c<Pins<SCL, SDA>, N>
-where
-    SCL: lpi2c::Pin<Signal = lpi2c::Scl, Module = consts::Const<N>>,
-    SDA: lpi2c::Pin<Signal = lpi2c::Sda, Module = consts::Const<N>>,
-{
+impl Lpi2c {
     /// Create an LPI2C driver from an LPI2C instance and a pair of pins.
     ///
     /// When this call returns, the LPI2C pins are configured for their
     /// LPI2C functions, the controller is enabled after reset, and the driver
     /// is using the provided timing configuration for the clock.
-    pub fn new(
-        lpi2c: crate::ral::lpi2c::Instance<N>,
+    ///
+    /// The pins are consumed to ensure they're properly configured, but they
+    /// are not stored in the driver.
+    pub fn with_pins<SCL, SDA, const N: u8>(
+        lpi2c: ral::lpi2c::Instance<N>,
         mut pins: Pins<SCL, SDA>,
         timings: &Timing,
-    ) -> Self {
+    ) -> Self
+    where
+        SCL: lpi2c::Pin<Signal = lpi2c::Scl, Module = crate::iomuxc::consts::Const<N>>,
+        SDA: lpi2c::Pin<Signal = lpi2c::Sda, Module = crate::iomuxc::consts::Const<N>>,
+    {
         lpi2c::prepare(&mut pins.scl);
         lpi2c::prepare(&mut pins.sda);
-        Self::init(lpi2c, pins, timings)
+        Self::init(lpi2c).configure(timings)
     }
-}
 
-impl<const N: u8> Lpi2c<(), N> {
     /// Create an I2C driver from an LPI2C instance.
     ///
-    /// This is similar to [`new()`](Self::new), but it does not configure pins.
+    /// This is similar to [`with_pins()`](Self::with_pins), but it does not configure pins.
     /// You're responsible for configuring pins, and for making sure
     /// the pin configuration doesn't change while this driver is in use.
-    pub fn without_pins(lpi2c: ral::lpi2c::Instance<N>, timings: &Timing) -> Self {
-        Self::init(lpi2c, (), timings)
+    pub fn without_pins<const N: u8>(lpi2c: ral::lpi2c::Instance<N>, timings: &Timing) -> Self {
+        Self::init(lpi2c).configure(timings)
     }
-}
 
-impl<P, const N: u8> Lpi2c<P, N> {
-    /// The peripheral instance.
-    pub const N: u8 = N;
-
-    fn init(mut lpi2c: ral::lpi2c::Instance<N>, pins: P, timings: &Timing) -> Self {
+    fn init<const N: u8>(lpi2c: ral::lpi2c::Instance<N>) -> Self {
+        let lpi2c: AnyInstance = crate::into_any(lpi2c);
         ral::write_reg!(ral::lpi2c, lpi2c, MCR, RST: RST_1);
         while ral::read_reg!(ral::lpi2c, lpi2c, MCR, RST == RST_1) {
             ral::write_reg!(ral::lpi2c, lpi2c, MCR, RST: RST_0);
         }
+        Lpi2c { lpi2c }
+    }
 
+    fn configure(mut self, timings: &Timing) -> Self {
         // I2C disabled due to reset.
-        set_timings(&mut lpi2c, timings);
+        set_timings(&mut self.lpi2c, timings);
 
-        ral::write_reg!(ral::lpi2c, lpi2c, MFCR, RXWATER: 0b01, TXWATER: 0b01);
-        ral::write_reg!(ral::lpi2c, lpi2c, MCR, MEN: MEN_1);
-
-        Lpi2c { lpi2c, pins }
+        ral::write_reg!(ral::lpi2c, self.lpi2c, MFCR, RXWATER: 0b01, TXWATER: 0b01);
+        ral::write_reg!(ral::lpi2c, self.lpi2c, MCR, MEN: MEN_1);
+        self
     }
 
     /// Indicates if the controller is (`true`) or is not (`false`) enabled.
@@ -165,16 +159,6 @@ impl<P, const N: u8> Lpi2c<P, N> {
         while ral::read_reg!(ral::lpi2c, self.lpi2c, MCR, RST == RST_1) {
             ral::modify_reg!(ral::lpi2c, self.lpi2c, MCR, RST: RST_0);
         }
-    }
-
-    /// Release the LPI2C components.
-    ///
-    /// This does not change any component state; it releases the components as-is.
-    /// If you need to obtain the registers in a known, good state, consider calling
-    /// methods like [`reset_controller()`](Self::reset_controller) before releasing
-    /// the registers.
-    pub fn release(self) -> (ral::lpi2c::Instance<N>, P) {
-        (self.lpi2c, self.pins)
     }
 
     /// Read the controller status bits.
@@ -215,21 +199,18 @@ impl<P, const N: u8> Lpi2c<P, N> {
     #[inline]
     pub fn read_data_register(&self) -> Option<u8> {
         let (empty, data) = ral::read_reg!(ral::lpi2c, self.lpi2c, MRDR, RXEMPTY, DATA);
-        if empty != 0 {
-            None
-        } else {
-            Some(data as u8)
-        }
+        if empty != 0 { None } else { Some(data as u8) }
     }
 
     /// Temporarily disable the LPI2C peripheral.
     ///
     /// The handle to a [`Disabled`](crate::lpi2c::Disabled) driver lets you modify
     /// LPI2C settings that require a fully disabled peripheral.
-    pub fn disabled<R>(&mut self, func: impl FnOnce(&mut Disabled<N>) -> R) -> R {
+    pub fn disabled<R>(&mut self, func: impl FnOnce(&mut Disabled) -> R) -> R {
         let mut disabled = Disabled::new(&mut self.lpi2c);
         func(&mut disabled)
     }
+
     /// If the bus is busy, return the status flags in the error
     /// position.
     fn check_busy(&self) -> Result<(), ControllerStatus> {
@@ -285,16 +266,6 @@ impl<P, const N: u8> Lpi2c<P, N> {
         self.wait_for(ControllerStatus::break_end_of_packet)
     }
 
-    /// Borrow the pins.
-    pub fn pins(&self) -> &P {
-        &self.pins
-    }
-
-    /// Exclusively borrow the pins.
-    pub fn pins_mut(&mut self) -> &mut P {
-        &mut self.pins
-    }
-
     /// Returns the bitflags that indicate enabled or disabled LPI2C interrupts.
     #[inline]
     pub fn interrupts(&self) -> Interrupts {
@@ -341,7 +312,7 @@ pub struct ControllerFifoStatus {
 }
 
 /// Must be called only when the LPI2C peripheral is disabled.
-fn set_timings<const N: u8>(lpi2c: &mut ral::lpi2c::Instance<N>, timings: &Timing) {
+fn set_timings(lpi2c: &mut AnyInstance, timings: &Timing) {
     let clock_config = timings.clock_configuration();
     ral::write_reg!(ral::lpi2c, lpi2c, MCCR0,
         CLKHI: clock_config.clkhi as u32,
@@ -362,13 +333,13 @@ fn set_timings<const N: u8>(lpi2c: &mut ral::lpi2c::Instance<N>, timings: &Timin
 ///
 /// This handle lets you modify LPI2C settings that require
 /// a disabled peripheral.
-pub struct Disabled<'a, const N: u8> {
-    lpi2c: &'a mut ral::lpi2c::Instance<N>,
+pub struct Disabled<'a> {
+    lpi2c: &'a mut AnyInstance,
     men: bool,
 }
 
-impl<'a, const N: u8> Disabled<'a, N> {
-    fn new(lpi2c: &'a mut ral::lpi2c::Instance<N>) -> Self {
+impl<'a> Disabled<'a> {
+    fn new(lpi2c: &'a mut AnyInstance) -> Self {
         let men = ral::read_reg!(ral::lpi2c, lpi2c, MCR, MEN == MEN_1);
         ral::modify_reg!(ral::lpi2c, lpi2c, MCR, MEN: MEN_0);
         Self { lpi2c, men }
@@ -414,7 +385,7 @@ impl<'a, const N: u8> Disabled<'a, N> {
     }
 }
 
-impl<const N: u8> Drop for Disabled<'_, N> {
+impl Drop for Disabled<'_> {
     fn drop(&mut self) {
         ral::modify_reg!(ral::lpi2c, self.lpi2c, MCR, MEN: self.men as u32);
     }
@@ -422,6 +393,7 @@ impl<const N: u8> Drop for Disabled<'_, N> {
 
 bitflags::bitflags! {
     /// Status flags for the LPI2C controller.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
     pub struct ControllerStatus : u32 {
         /// Bus busy flag.
         ///
@@ -513,6 +485,7 @@ bitflags::bitflags! {
     /// LPI2C interrupt settings.
     ///
     /// A set bit indicates that an interrupt is enabled.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
     pub struct Interrupts : u32 {
         /// Data match interrupt enable.
         const DATA_MATCH = 1 << 14;
@@ -621,7 +594,7 @@ impl ControllerCommand {
     /// Turn a command into its raw representation, permitting
     /// 32-bit writes to the transmit data register.
     const fn raw(self) -> u32 {
-        use crate::ral::lpi2c::MTDR::CMD::{offset as OFFSET, RW::*};
+        use crate::ral::lpi2c::MTDR::CMD::{RW::*, offset as OFFSET};
         match self {
             Self::Transmit { byte } => (CMD_0 << OFFSET) | byte as u32,
             Self::Receive { count } => (CMD_1 << OFFSET) | count.saturating_sub(1) as u32,
@@ -643,7 +616,7 @@ impl ControllerCommand {
 // embedded-hal implementations.
 //
 
-impl<P, const N: u8> blocking::TransactionalIter for Lpi2c<P, N> {
+impl blocking::TransactionalIter for Lpi2c {
     type Error = ControllerStatus;
     fn exec_iter<'a, O>(&mut self, address: u8, operations: O) -> Result<(), Self::Error>
     where
@@ -658,7 +631,7 @@ impl<P, const N: u8> blocking::TransactionalIter for Lpi2c<P, N> {
     }
 }
 
-impl<P, const N: u8> blocking::WriteIter for Lpi2c<P, N> {
+impl blocking::WriteIter for Lpi2c {
     type Error = ControllerStatus;
     fn write<B>(&mut self, address: u8, bytes: B) -> Result<(), Self::Error>
     where
@@ -668,7 +641,7 @@ impl<P, const N: u8> blocking::WriteIter for Lpi2c<P, N> {
     }
 }
 
-impl<P, const N: u8> blocking::WriteIterRead for Lpi2c<P, N> {
+impl blocking::WriteIterRead for Lpi2c {
     type Error = ControllerStatus;
     fn write_iter_read<B>(
         &mut self,
@@ -716,7 +689,7 @@ impl<P, const N: u8> blocking::WriteIterRead for Lpi2c<P, N> {
     }
 }
 
-impl<P, const N: u8> blocking::Transactional for Lpi2c<P, N> {
+impl blocking::Transactional for Lpi2c {
     type Error = ControllerStatus;
     fn exec(
         &mut self,
@@ -732,21 +705,21 @@ impl<P, const N: u8> blocking::Transactional for Lpi2c<P, N> {
     }
 }
 
-impl<P, const N: u8> blocking::Read for Lpi2c<P, N> {
+impl blocking::Read for Lpi2c {
     type Error = ControllerStatus;
     fn read(&mut self, address: u8, buffer: &mut [u8]) -> Result<(), Self::Error> {
         blocking::Transactional::exec(self, address, &mut [blocking::Operation::Read(buffer)])
     }
 }
 
-impl<P, const N: u8> blocking::Write for Lpi2c<P, N> {
+impl blocking::Write for Lpi2c {
     type Error = ControllerStatus;
     fn write(&mut self, address: u8, bytes: &[u8]) -> Result<(), Self::Error> {
         blocking::Transactional::exec(self, address, &mut [blocking::Operation::Write(bytes)])
     }
 }
 
-impl<P, const N: u8> blocking::WriteRead for Lpi2c<P, N> {
+impl blocking::WriteRead for Lpi2c {
     type Error = ControllerStatus;
     fn write_read(
         &mut self,
@@ -785,11 +758,11 @@ impl eh1::i2c::Error for ControllerStatus {
     }
 }
 
-impl<P, const N: u8> eh1::i2c::ErrorType for Lpi2c<P, N> {
+impl eh1::i2c::ErrorType for Lpi2c {
     type Error = ControllerStatus;
 }
 
-impl<P, const N: u8> eh1::i2c::I2c for Lpi2c<P, N> {
+impl eh1::i2c::I2c for Lpi2c {
     fn transaction(
         &mut self,
         address: u8,
@@ -817,16 +790,16 @@ mod transaction {
     use eh02::blocking::i2c::Operation;
 
     /// A stateful type that can run I2C operations.
-    pub struct Runner<'a, I> {
-        lpi2c: &'a mut I,
+    pub struct Runner<'a> {
+        lpi2c: &'a mut Lpi2c,
         direction: Option<Direction>,
     }
 
-    impl<'a, P, const N: u8> Runner<'a, Lpi2c<P, N>> {
+    impl<'a> Runner<'a> {
         /// Create a new transaction runner.
         ///
         /// Returns an error if the LPI2C is busy.
-        pub fn new(lpi2c: &'a mut Lpi2c<P, N>) -> Result<Self, ControllerStatus> {
+        pub fn new(lpi2c: &'a mut Lpi2c) -> Result<Self, ControllerStatus> {
             lpi2c.check_busy()?;
             lpi2c.clear_fifo();
             lpi2c.clear_controller_status(ControllerStatus::W1C);
@@ -1042,11 +1015,7 @@ const fn line_latency_cycles(filter: u8, risetime: u8, prescaler: Prescaler) -> 
 const fn compute_clk(hz: u32, baud: ClockSpeed, prescaler: Prescaler, scl_latency: u8) -> u8 {
     let clk: u32 =
         (hz / prescaler.divider() as u32 / baud.frequency() - scl_latency as u32 - 2) / 3;
-    if clk > 0xFF {
-        0xFFu8
-    } else {
-        clk as u8
-    }
+    if clk > 0xFF { 0xFFu8 } else { clk as u8 }
 }
 
 impl Timing {
@@ -1155,11 +1124,7 @@ impl Timing {
     /// Define LPI2C timings by the clock configuration values, and a prescaler.
     pub const fn new(clock_configuration: ClockConfiguration, prescaler: Prescaler) -> Self {
         const fn max(left: u32, right: u32) -> u32 {
-            if left > right {
-                left
-            } else {
-                right
-            }
+            if left > right { left } else { right }
         }
         let busidle = max(
             (clock_configuration.clklo as u32 + clock_configuration.sethold as u32 + 2) * 2,

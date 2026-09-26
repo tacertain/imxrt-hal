@@ -28,9 +28,13 @@ mod app {
     const AUDIO_POLL_MS: u32 = 1000 * (board::PIT_FREQUENCY / 1_000);
 
     use eh1::i2c::I2c;
+    use imxrt_hal::pit::Channel;
     use imxrt_hal::{self as hal};
-    type SaiTx = hal::sai::Tx<1, 16, 2, hal::sai::PackingNone>;
-    type SaiRx = hal::sai::Rx<1, 16, 2, hal::sai::PackingNone>;
+
+    const POLL_LOG_CHANNEL: Channel = Channel::Chan1;
+    const AUDIO_CHANNEL: Channel = Channel::Chan2;
+    type SaiTx = hal::sai::Tx;
+    type SaiRx = hal::sai::Rx;
 
     //
     // End configurations.
@@ -39,10 +43,8 @@ mod app {
     #[local]
     struct Local {
         led: board::Led,
-        poll_log: hal::pit::Pit<1>,
-
-        /// This timer tells us how frequently work on audio.
-        audio_pit: hal::pit::Pit<2>,
+        /// The PIT peripheral for timing operations.
+        pit: hal::pit::Pit,
 
         /// Sample counter for the wave generation
         counter: u32,
@@ -62,7 +64,7 @@ mod app {
         let mut cortex_m = cx.core;
         let (
             board::Common {
-                pit: (_, mut poll_log, mut audio_pit, _),
+                mut pit,
                 usb1,
                 usbnc1,
                 usbphy1,
@@ -80,14 +82,14 @@ mod app {
         ) = board::new();
 
         if BACKEND == board::logging::Backend::Lpuart {
-            poll_log.set_load_timer_value(LPUART_POLL_INTERVAL_MS);
-            poll_log.set_interrupt_enable(true);
-            poll_log.enable();
+            pit.set_load_timer_value(POLL_LOG_CHANNEL, LPUART_POLL_INTERVAL_MS);
+            pit.set_interrupt_enable(POLL_LOG_CHANNEL, true);
+            pit.enable(POLL_LOG_CHANNEL);
         } else {
-            poll_log.disable();
+            pit.disable(POLL_LOG_CHANNEL);
         }
 
-        let usbd = hal::usbd::Instances {
+        let usbd = imxrt_usbd::Instances {
             usb: usb1,
             usbnc: usbnc1,
             usbphy: usbphy1,
@@ -98,12 +100,12 @@ mod app {
 
         let mut sai_config = hal::sai::SaiConfig::i2s(hal::sai::bclk_div(8));
         sai_config.sync_mode = hal::sai::SyncMode::RxFollowTx;
-        let (Some(sai1_tx), Some(sai1_rx)) = sai1.split(&sai_config) else {
+        let (Some(mut sai1_tx), Some(mut sai1_rx)) = sai1
+            .split(16, 2, hal::sai::Packing::None, &sai_config)
+            .unwrap()
+        else {
             panic!("Unexpected return from sai split");
         };
-
-        let mut sai1_tx: SaiTx = sai1_tx;
-        let mut sai1_rx: SaiRx = sai1_rx;
 
         let regs = sai1_tx.reg_dump();
         defmt::println!(
@@ -120,13 +122,13 @@ mod app {
         cortex_m::peripheral::DWT::unlock();
         cortex_m.DWT.enable_cycle_counter();
 
-        audio_pit.set_load_timer_value(AUDIO_POLL_MS);
-        audio_pit.set_interrupt_enable(true);
-        audio_pit.enable();
+        pit.set_load_timer_value(AUDIO_CHANNEL, AUDIO_POLL_MS);
+        pit.set_interrupt_enable(AUDIO_CHANNEL, true);
+        pit.enable(AUDIO_CHANNEL);
 
         let mut counter: u32 = 0;
         for _i in 0..31 {
-            sai1_tx.write_frame(0, [0, 0]);
+            sai1_tx.write_frame_u16(0, &[0, 0]);
             counter += 1;
         }
         sai1_tx.set_enable(true);
@@ -135,7 +137,7 @@ mod app {
         );
         for _i in 0..31 {
             let mut rx_data = [0u16; 2];
-            sai1_rx.read_frame(0, &mut rx_data);
+            sai1_rx.read_frame_u16(0, &mut rx_data);
         }
         sai1_rx.set_enable(true);
         sai1_rx.set_interrupts(
@@ -159,8 +161,7 @@ mod app {
             },
             Local {
                 led,
-                poll_log,
-                audio_pit,
+                pit,
                 dac_cp,
                 counter,
             },
@@ -179,13 +180,13 @@ mod app {
         cx.shared.sai1_rx.lock(|sai1_rx| {
             sai1_rx.clear_status(hal::sai::Status::FIFO_ERROR | hal::sai::Status::WORD_START); //TODO: figure out why FIFO error happens
             while sai1_rx.status().contains(hal::sai::Status::FIFO_REQUEST) {
-                sai1_rx.read_frame(0, received);
+                sai1_rx.read_frame_u16(0, received);
             }
         });
         cx.shared.sai1_tx.lock(|sai1_tx| {
             sai1_tx.clear_status(hal::sai::Status::FIFO_ERROR | hal::sai::Status::WORD_START); //TODO: figure out why FIFO error happens
             while sai1_tx.status().contains(hal::sai::Status::FIFO_REQUEST) {
-                sai1_tx.write_frame(0, *received);
+                sai1_tx.write_frame_u16(0, received);
                 *counter = (*counter).wrapping_add(1);
             }
             if (*counter % 10000) == 0 {
@@ -210,26 +211,21 @@ mod app {
         cx.shared.poller.lock(|poller| poller.poll());
     }
 
-    #[task(binds = BOARD_PIT, shared = [sai1_tx, sai1_rx], local = [audio_pit, poll_log, dac_cp], priority = 1)]
+    #[task(binds = BOARD_PIT, shared = [sai1_tx, sai1_rx], local = [pit, dac_cp], priority = 1)]
     fn pit_interrupt(cx: pit_interrupt::Context) {
-        let pit_interrupt::LocalResources {
-            audio_pit,
-            poll_log,
-            dac_cp,
-            ..
-        } = cx.local;
+        let pit_interrupt::LocalResources { pit, dac_cp, .. } = cx.local;
 
-        while audio_pit.is_elapsed() {
-            audio_pit.clear_elapsed();
+        while pit.is_elapsed(AUDIO_CHANNEL) {
+            pit.clear_elapsed(AUDIO_CHANNEL);
         }
 
         dac_cp.dump_device_config();
 
         // Is it time for us to poll the logger?
         // This only happens for the LPUART backend.
-        if poll_log.is_elapsed() {
-            while poll_log.is_elapsed() {
-                poll_log.clear_elapsed();
+        if pit.is_elapsed(POLL_LOG_CHANNEL) {
+            while pit.is_elapsed(POLL_LOG_CHANNEL) {
+                pit.clear_elapsed(POLL_LOG_CHANNEL);
             }
             poll_logger::spawn().unwrap();
         }

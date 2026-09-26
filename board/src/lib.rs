@@ -68,16 +68,16 @@ pub use board_impl::*;
 /// that don't necessarily depend on a pinout.
 #[cfg(any(chip = "imxrt1010", chip = "imxrt1060", chip = "imxrt1170"))]
 pub struct Common {
-    /// PIT channels.
-    pub pit: hal::pit::Channels,
+    /// PIT timer.
+    pub pit: hal::pit::Pit,
     /// GPT1 timer.
     ///
     /// Use [`GPT1_FREQUENCY`] to understand its frequency.
-    pub gpt1: hal::gpt::Gpt<1>,
+    pub gpt1: hal::gpt::Gpt,
     /// GPT2 timer.
     ///
     /// Use [`GPT2_FREQUENCY`] to understand its frequency.
-    pub gpt2: hal::gpt::Gpt<2>,
+    pub gpt2: hal::gpt::Gpt,
     /// DMA channels.
     pub dma: [Option<hal::dma::channel::Channel>; hal::dma::CHANNEL_COUNT],
     /// Secure real-time counter.
@@ -94,16 +94,18 @@ pub struct Common {
     pub usbnc1: UsbNc1,
     /// USBPHY1 registers.
     pub usbphy1: UsbPhy1,
+    /// Fuse access through the on-chip one-time programmable controller (OCOTP).
+    pub ocotp: hal::ocotp::Ocotp,
 }
 
 #[cfg(any(chip = "imxrt1010", chip = "imxrt1060", chip = "imxrt1170"))]
 impl Common {
     /// Prepares common resources.
     fn new() -> Self {
-        let pit: Pit = unsafe { Pit::instance() };
+        let pit_inst: Pit = unsafe { Pit::instance() };
         // Stop timers in debug mode.
-        ral::modify_reg!(ral::pit, pit, MCR, FRZ: FRZ_1);
-        let pit = hal::pit::new(pit);
+        ral::modify_reg!(ral::pit, pit_inst, MCR, FRZ: FRZ_1);
+        let pit = hal::pit::Pit::new(pit_inst);
 
         let gpt1 = configure_gpt(unsafe { ral::gpt::GPT1::instance() }, GPT1_DIVIDER);
         let gpt2 = configure_gpt(unsafe { ral::gpt::GPT2::instance() }, GPT2_DIVIDER);
@@ -122,6 +124,8 @@ impl Common {
             ..
         } = hal::snvs::new(unsafe { ral::snvs::SNVS::instance() });
 
+        let ocotp = hal::ocotp::Ocotp::new(unsafe { ral::ocotp::OCOTP::instance() });
+
         Self {
             pit,
             gpt1,
@@ -132,6 +136,7 @@ impl Common {
             usb1: unsafe { Usb1::instance() },
             usbnc1: unsafe { UsbNc1::instance() },
             usbphy1: unsafe { UsbPhy1::instance() },
+            ocotp,
         }
     }
 }
@@ -203,10 +208,7 @@ fn convert_iomuxc(_: ral::iomuxc::IOMUXC) -> Pads {
     unsafe { Pads::new() }
 }
 
-fn configure_gpt<const N: u8>(gpt: ral::gpt::Instance<N>, divider: u32) -> hal::gpt::Gpt<N>
-where
-    ral::gpt::Instance<N>: ral::Valid,
-{
+fn configure_gpt<const N: u8>(gpt: ral::gpt::Instance<N>, divider: u32) -> hal::gpt::Gpt {
     let mut gpt = hal::gpt::Gpt::new(gpt);
     gpt.disable();
     gpt.set_wait_mode_enable(true);
@@ -246,7 +248,7 @@ type Pit = crate::ral::pit::PIT1;
 #[allow(unused)]
 mod board_interrupts {
     pub type Vector = unsafe extern "C" fn();
-    extern "C" {
+    unsafe extern "C" {
         pub fn BOARD_CONSOLE();
         pub fn BOARD_BUTTON();
         pub fn BOARD_SPI();
@@ -313,8 +315,9 @@ pub mod blocking {
 /// features. Then, simply define the default backend in your module.
 #[cfg(feature = "imxrt-log")]
 pub mod logging {
-    use crate::hal::{dma::channel::Channel, lpuart::Lpuart, usbd::Instances};
+    use crate::hal::{dma::channel::Channel, lpuart::Lpuart};
     pub use imxrt_log::Poller;
+    use imxrt_usbd::Instances;
     pub const BACKEND: Backend = crate::board_impl::DEFAULT_LOGGING_BACKEND;
 
     /// Select the logging front-end.
@@ -337,10 +340,10 @@ pub mod logging {
     }
 
     /// Initialize the logger.
-    pub fn init<P, const LPUART: u8, const USBD: u8>(
+    pub fn init<const USBD: u8>(
         frontend: Frontend,
         backend: Backend,
-        lpuart: Lpuart<P, LPUART>,
+        lpuart: Lpuart,
         dma: Channel,
         usbd: Instances<USBD>,
     ) -> imxrt_log::Poller {
@@ -372,11 +375,7 @@ pub mod logging {
     ///
     /// This always enables interrupts. If you don't want interrupts to active,
     /// then don't unmask them.
-    pub fn lpuart<P, const LPUART: u8>(
-        frontend: Frontend,
-        lpuart: Lpuart<P, LPUART>,
-        dma_channel: Channel,
-    ) -> imxrt_log::Poller {
+    pub fn lpuart(frontend: Frontend, lpuart: Lpuart, dma_channel: Channel) -> imxrt_log::Poller {
         match frontend {
             Frontend::Log => {
                 imxrt_log::log::lpuart(lpuart, dma_channel, imxrt_log::Interrupts::Enabled).unwrap()

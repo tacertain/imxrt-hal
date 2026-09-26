@@ -2,18 +2,57 @@
 
 ## [Unreleased]
 
-**BREAKING** Update `imxrt-usbd` to 0.3. Users are required to update to
-`usb-device` 0.3 and its compatible dependencies.
+## 0.6.0 - 2026-07-26
+
+**BREAKING** Remove type states from the following drivers:
+
+- FlexPWM
+- GPT
+- PIT
+- LPI2C
+- LPUART
+- LPSPI
+- ADC (10xx)
+- SAI
+- GPIO, RGPIO
+
+After construction, the type no longer tracks its pins or peripheral instances.
+To type check peripheral instances against pins, construct types using
+`with_pins`.
+
+**BREAKING** The FlexPWM refactor removes dedicated types for `Submodules` and
+`Outputs`. Users should program directly against the `Pwm` type.
+
+**BREAKING** The PIT driver no longer models channels as dedicated objects.
+Users should program directly against the `Pit` type.
+
+**BREAKING** There is no support for unproven embedded-hal 0.2 traits. The
+`eh02-unproven` feature is removed.
+
+**BREAKING** There is no support for `rand_core` traits. The `rand_core`
+feature is removed.
+
+**BREAKING** The TRNG and TEMPMON drivers use `core::task::Poll` instead
+of `nb::Result`.
+
+**BREAKING** Remove the dependency on `imxrt-usbd` and the `usbd` module.
+Users should select their preferred versions of `imxrt-usbd`, `usb-device`,
+and other class packages.
 
 **BREAKING** Update imxrt-rs dependencies that affect the public API:
 
 - `imxrt-ral` 0.6
 - `iomxrt-iomuxc` 0.3
+- `imxrt-dma` 0.2
+
+Additionally, update third-party dependencies in the public API:
+
+- `bitflags` 2.11
+- `embedded-io` 0.7
 
 **BREAKING** Remove deprecated APIs
 
 - `clko2::Selection::TracClk`
-- `timer::*PitChan`
 - `lpspi::Disabled::{set_mode, set_watermark}`
 
 **BREAKING** Change the LPSPI driver:
@@ -21,9 +60,15 @@
 - `LpspiError::{Busy, NoData}` are removed as possible LPSPI errors.
 - There is no more `PCS0` type state associated with the LPSPI bus.
 - `FifoStatus` has public members for TX and RX FIFO capacities.
+- `Transaction` fields are no longer public. Use the `set_*` (`const`) methods
+  to set the fields on a `Transaction` object.
 
 Introduce a hardware chip select and SPI mode into each LPSPI transaction.
 Add an LPSPI configuration for hardware chip selects.
+
+The `Lpspi` provides an implementation of embedded-hal 1.0 `SpiBus`. You may use
+the `SpiBus` with either a software- or hardware-managed chip select, depending
+on how you choose to mux LPSPI pins.
 
 **BREAKING** The following peripherals are not available on the 1180. Therefore,
 they are no longer considered common. However, their APIs are unchanged, and they
@@ -34,17 +79,31 @@ are still exposed when building with a chip feature.
 - `snvs`
 - `timer`
 
+**BREAKING** Remove the `timer` module, including most embedded-hal 0.2 blocking
+delay implementations.
+
+**BREAKING** Upgrade to Rust 2024.
+
 Introduce an `imxrt1180` feature to support the RT1180 series.
 
-Add a `defmt` feature targeting version 0.3. When enabled, select imxrt-hal
+Add a `defmt` feature targeting version 1.0. When enabled, select imxrt-hal
 types can be formatted with `defmt`.
 
-Export the SAI driver for 1170 MCUs.
+Export the SAI driver for 1170 MCUs. Fix SAI FPACK enumerated values. Ensure
+SAI tracks configured pins, even if users prefer `without_pins`.
 
 Add SAI DMA support. DMA targets the lowest-numbered enabled data line for
 each direction; multiple data lines are not supported by DMA.
 
-Add FlexSPI clock(s) locator
+## [0.5.13] 2026-03-15
+
+Add OCOTP driver for reading and writing fuses.
+
+Add FlexSPI clock gate locator(s) for 10xx MCUs.
+
+## [0.5.12] 2025-12-10
+
+Add uSDHC clock gates for 10xx and 11xx MCUs.
 
 ## [0.5.11] 2025-07-07
 
@@ -396,6 +455,8 @@ The release includes 0.3.1 fixes.
 Prior releases were not tracked with a changelog entry.
 
 [Unreleased]: https://github.com/imxrt-rs/imxrt-hal/compare/0.5.8...main
+[0.5.13]: https://github.com/imxrt-rs/imxrt-rs/compare/0.5.12...0.5.13
+[0.5.12]: https://github.com/imxrt-rs/imxrt-rs/compare/0.5.11...0.5.12
 [0.5.11]: https://github.com/imxrt-rs/imxrt-rs/compare/0.5.10...0.5.11
 [0.5.10]: https://github.com/imxrt-rs/imxrt-rs/compare/0.5.9...0.5.10
 [0.5.9]: https://github.com/imxrt-rs/imxrt-rs/compare/0.5.8...0.5.9

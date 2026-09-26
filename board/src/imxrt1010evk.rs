@@ -43,14 +43,15 @@ pub use imxrt10xx::{clock::*, power::*};
 pub(crate) const DEFAULT_LOGGING_BACKEND: crate::logging::Backend = crate::logging::Backend::Lpuart;
 
 /// The board LED.
-pub type Led = hal::gpio::Output<iomuxc::gpio::GPIO_11>;
+pub type Led = hal::gpio::Output;
 
 /// The SW4 "user" button.
-pub type Button = hal::gpio::Input<ButtonPad>;
+pub type Button = hal::gpio::Input;
 type ButtonPad = iomuxc::gpio_sd::GPIO_SD_05;
 
 /// The UART console. Baud specified in lib.rs.
-pub type Console = hal::lpuart::Lpuart<ConsolePins, 1>;
+pub type Console = hal::lpuart::Lpuart;
+const CONSOLE_INSTANCE: u8 = 1;
 
 /// The debug serial console's pins.
 ///
@@ -68,7 +69,7 @@ pub type Sai1TxPins =
 pub type Sai1RxPins =
     hal::sai::Pins<iomuxc::gpio::GPIO_02, iomuxc::gpio::GPIO_01, iomuxc::gpio::GPIO_03>;
 
-pub type Sai1 = hal::sai::Sai<1, Sai1MclkPin, Sai1TxPins, ()>;
+pub type Sai1 = hal::sai::Sai;
 
 pub type SpiPins = hal::lpspi::Pins<
     iomuxc::gpio_ad::GPIO_AD_04, // SDO, J57_8
@@ -80,7 +81,9 @@ pub type SpiPins = hal::lpspi::Pins<
 pub type SpiPcs0 = iomuxc::gpio_ad::GPIO_AD_05;
 
 #[cfg(feature = "spi")]
-pub type Spi = hal::lpspi::Lpspi<SpiPins, 1>;
+pub type Spi = hal::lpspi::Lpspi;
+#[cfg(feature = "spi")]
+const SPI_INSTANCE: u8 = 1;
 
 #[cfg(not(feature = "spi"))]
 pub type Spi = ();
@@ -90,7 +93,8 @@ pub type I2cPins = hal::lpi2c::Pins<
     iomuxc::gpio::GPIO_01, // SDA, J57_18
 >;
 
-pub type I2c = hal::lpi2c::Lpi2c<I2cPins, 1>;
+const I2C_INSTANCE: u8 = 1;
+pub type I2c = hal::lpi2c::Lpi2c;
 
 /// PWM components.
 #[cfg(not(feature = "spi"))]
@@ -98,35 +102,27 @@ pub mod pwm {
     use super::iomuxc;
     use crate::hal::flexpwm;
 
+    pub use flexpwm::Pwm;
+
     /// The PWM peripheral instance.
     ///
     /// The RAL qualifies this as "PWM 0," even if the board schematic and
     /// reference manual qualify this as "PWM 1." This is due to how the RAL
     /// auto-generated register definitions in the presence of multiple instances
     /// per peripheral.
-    pub type Peripheral = flexpwm::Pwm<{ crate::ral::SOLE_INSTANCE }>;
-    pub type Submodule = flexpwm::Submodule<{ Peripheral::N }, 2>;
-    pub type Outputs = (
-        flexpwm::Output<iomuxc::gpio_ad::GPIO_AD_04>, // A, J57_8
-        flexpwm::Output<iomuxc::gpio_ad::GPIO_AD_03>, // B, J57_10
-    );
+    pub(super) const N: u8 = crate::ral::SOLE_INSTANCE;
+    pub const SM: flexpwm::SM = flexpwm::SM::SM2;
+
+    pub use flexpwm::Channel::*;
+
+    pub(super) type PinA = iomuxc::gpio_ad::GPIO_AD_04; // J57_8
+    pub(super) type PinB = iomuxc::gpio_ad::GPIO_AD_03; // J57_10
 }
 
 #[cfg(feature = "spi")]
 pub mod pwm {
-    pub type Peripheral = ();
-    pub type Submodule = ();
-    pub type Outputs = ();
-}
-
-/// The board's PWM components.
-pub struct Pwm {
-    /// Core PWM peripheral.
-    pub module: pwm::Peripheral,
-    /// PWM submodule control registers.
-    pub submodule: pwm::Submodule,
-    /// The output pairs (tuple of A, B outputs).
-    pub outputs: pwm::Outputs,
+    /// PWM disabled when SPI is enabled.
+    pub type Pwm = ();
 }
 
 /// Test point 34.
@@ -145,12 +141,12 @@ pub type Tp31 = iomuxc::gpio_sd::GPIO_SD_01;
 ///
 /// Exposes methods to configure your board's specific GPIOs.
 pub struct GpioPorts {
-    gpio2: hal::gpio::Port<2>,
+    gpio2: hal::gpio::Port,
 }
 
 impl GpioPorts {
     /// Returns the GPIO port for the button.
-    pub fn button_mut(&mut self) -> &mut hal::gpio::Port<2> {
+    pub fn button_mut(&mut self) -> &mut hal::gpio::Port {
         &mut self.gpio2
     }
 }
@@ -164,7 +160,7 @@ pub struct Specifics {
     pub spi: Spi,
     pub i2c: I2c,
     pub sai1: Sai1,
-    pub pwm: Pwm,
+    pub pwm: pwm::Pwm,
     pub tp34: Tp34,
     pub tp31: Tp31,
     pub trng: hal::trng::Trng,
@@ -185,11 +181,11 @@ impl Specifics {
         let gpio2 = unsafe { ral::gpio::GPIO2::instance() };
         let mut gpio2 = hal::gpio::Port::new(gpio2);
 
-        let led = gpio1.output(iomuxc.gpio.p11);
-        let button = gpio2.input(iomuxc.gpio_sd.p05);
+        let led = gpio1.output(iomuxc.gpio.p11).unwrap();
+        let button = gpio2.input(iomuxc.gpio_sd.p05).unwrap();
 
         let lpuart1 = unsafe { ral::lpuart::LPUART1::instance() };
-        let mut console = hal::lpuart::Lpuart::new(
+        let mut console = hal::lpuart::Lpuart::with_pins(
             lpuart1,
             hal::lpuart::Pins {
                 tx: iomuxc.gpio.p10,
@@ -208,7 +204,7 @@ impl Specifics {
                 bclk: iomuxc.gpio.p06,
                 data: iomuxc.gpio.p04,
             };
-            Sai1::from_tx(sai1, iomuxc.gpio.p08, pins)
+            hal::sai::Sai::from_tx(sai1, iomuxc.gpio.p08, pins)
         };
 
         #[cfg(feature = "spi")]
@@ -223,7 +219,7 @@ impl Specifics {
                 let pcs0: &mut SpiPcs0 = &mut iomuxc.gpio_ad.p05;
                 pcs0
             });
-            let mut spi = Spi::new(lpspi1, pins);
+            let mut spi = Spi::with_pins(lpspi1, pins);
             spi.disabled(|spi| {
                 spi.set_clock_hz(super::LPSPI_CLK_FREQUENCY, super::SPI_BAUD_RATE_FREQUENCY);
             });
@@ -235,7 +231,7 @@ impl Specifics {
         let spi = ();
 
         let lpi2c1 = unsafe { ral::lpi2c::LPI2C1::instance() };
-        let i2c = I2c::new(
+        let i2c = I2c::with_pins(
             lpi2c1,
             I2cPins {
                 scl: iomuxc.gpio.p02,
@@ -247,24 +243,17 @@ impl Specifics {
         #[cfg(not(feature = "spi"))]
         let pwm = {
             let flexpwm = unsafe { ral::pwm::PWM::instance() };
-            let (pwm, (_, _, sm, _)) = hal::flexpwm::new(flexpwm);
-
-            let out_a = hal::flexpwm::Output::new_a(iomuxc.gpio_ad.p04);
-            let out_b = hal::flexpwm::Output::new_b(iomuxc.gpio_ad.p03);
-
-            super::Pwm {
-                module: pwm,
-                submodule: sm,
-                outputs: (out_a, out_b),
-            }
+            let pwm = pwm::Pwm::new::<{ pwm::N }>(flexpwm);
+            let mut pin_a: pwm::PinA = iomuxc.gpio_ad.p04;
+            let mut pin_b: pwm::PinB = iomuxc.gpio_ad.p03;
+            crate::iomuxc::flexpwm::prepare(&mut pin_a);
+            crate::iomuxc::flexpwm::prepare(&mut pin_b);
+            pwm
         };
 
         #[cfg(feature = "spi")]
-        let pwm = Pwm {
-            module: (),
-            submodule: (),
-            outputs: (),
-        };
+        #[allow(clippy::let_unit_value)]
+        let pwm = ();
 
         let trng = hal::trng::Trng::new(
             unsafe { ral::trng::TRNG::instance() },
@@ -297,12 +286,12 @@ use hal::ccm::clock_gate;
 /// The clock gates for this board's peripherals.
 pub(crate) const CLOCK_GATES: &[clock_gate::Locator] = &[
     clock_gate::gpio::<1>(),
-    clock_gate::lpuart::<{ Console::N }>(),
+    clock_gate::lpuart::<CONSOLE_INSTANCE>(),
     #[cfg(feature = "spi")]
-    clock_gate::lpspi::<{ Spi::N }>(),
-    clock_gate::lpi2c::<{ I2c::N }>(),
+    clock_gate::lpspi::<SPI_INSTANCE>(),
+    clock_gate::lpi2c::<{ I2C_INSTANCE }>(),
     #[cfg(not(feature = "spi"))]
-    clock_gate::flexpwm::<{ pwm::Peripheral::N }>(),
+    clock_gate::flexpwm::<{ pwm::N }>(),
 ];
 
 /// Configure board pins.
@@ -311,9 +300,9 @@ pub(crate) const CLOCK_GATES: &[clock_gate::Locator] = &[
 /// set alternates here.
 fn configure_pins(
     super::Pads {
-        ref mut gpio,
-        ref mut gpio_sd,
-        ref mut gpio_ad,
+        gpio,
+        gpio_sd,
+        gpio_ad,
         ..
     }: &mut super::Pads,
 ) {

@@ -4,10 +4,13 @@
 
 **BREAKING** Integrate breaking dependencies for the USB back-end:
 
-- `imxrt-usbd` 0.3
+- `imxrt-ral` 0.6
+- `imxrt-usbd` 0.4
 - `imxrt-hal` 0.6
 - `usb-device` 0.3
 - `usbd-serial` 0.2
+
+**BREAKING** Upgrade to Rust 2024.
 
 ## [0.1.2] 2024-06-06
 
